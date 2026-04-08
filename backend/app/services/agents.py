@@ -2,21 +2,53 @@ import uuid
 import json
 from typing import List
 from app.services.llm_client import generate_json, generate_text
-from app.models.course import Course, Chapter, Level, Quiz, QuizQuestion
+from app.models.course import Course, Chapter, Level, Quiz, QuizQuestion, Prerequisite
+
+class PrerequisiteAssessor:
+    """Agent 0: Assesses what fundamental skills are needed before learning the target skill"""
+    @staticmethod
+    async def get_prerequisites(target_skill: str) -> List[Prerequisite]:
+        system_prompt = """
+        You are 'The Assessor', a master educator.
+        Your job is to identify the fundamental prerequisite skills someone MUST know before they can master the target skill to an advanced level.
+        Break it down into 3-6 distinct prerequisites.
+        Output MUST be a JSON object with a 'prerequisites' array.
+        Each prerequisite dict should have 'title' (str) and 'description' (str) explaining why it is needed.
+        """
+        user_prompt = f"Target Skill: {target_skill}"
+
+        result_json = await generate_json(system_prompt, user_prompt)
+
+        prereqs = []
+        for p_data in result_json.get("prerequisites", []):
+            prereqs.append(Prerequisite(
+                id=str(uuid.uuid4()),
+                title=p_data["title"],
+                description=p_data["description"]
+            ))
+
+        return prereqs
 
 class SyllabusArchitect:
-    """Agent 1: Generates the high-level chapters based on user prompt"""
+    """Agent 1: Generates the high-level chapters based on user prompt and prerequisites"""
     @staticmethod
-    async def generate_syllabus(target_skill: str, user_context: str) -> Course:
+    async def generate_syllabus(target_skill: str, user_context: str, known_prereqs: List[str], unknown_prereqs: List[str]) -> Course:
         system_prompt = """
-        You are 'The Syllabus Architect'. Your job is to deeply think about and create a MECE (Mutually Exclusive, Collectively Exhaustive) syllabus for learning a specific skill.
-        Focus entirely on the quality, logical progression, and exhaustiveness of the curriculum.
+        You are 'The Syllabus Architect'. Your job is to deeply think about and create a MECE (Mutually Exclusive, Collectively Exhaustive) syllabus for learning a specific skill up to an ADVANCED level.
+
+        CRITICAL INSTRUCTIONS:
+        1. The user ALREADY KNOWS certain prerequisite topics. DO NOT include basic chapters about these.
+        2. The user DOES NOT KNOW certain other prerequisite topics. You MUST create the initial chapters to thoroughly teach these missing prerequisites before diving into the main target skill.
+        3. Ensure the progression is flawless, starting from their missing fundamentals all the way to advanced mastery of the target skill.
+
         Output MUST be a JSON object with 'title' (str), 'target_skill' (str), and 'chapters' (list of dicts).
         Each chapter dict should have 'title' (str) and 'description' (str).
         Do NOT worry about markdown formatting. Just output the pure data structure.
-        Ensure you follow the user's specific context.
         """
-        user_prompt = f"Target Skill: {target_skill}\nContext: {user_context}"
+
+        user_prompt = f"Target Skill: {target_skill}\nUser Context: {user_context}\n"
+        user_prompt += f"\nPrerequisites User ALREADY KNOWS (Skip these basics):\n- " + "\n- ".join(known_prereqs) if known_prereqs else "\nPrerequisites User ALREADY KNOWS: None"
+        user_prompt += f"\n\nPrerequisites User DOES NOT KNOW (You MUST teach these first):\n- " + "\n- ".join(unknown_prereqs) if unknown_prereqs else "\nPrerequisites User DOES NOT KNOW: None"
 
         result_json = await generate_json(system_prompt, user_prompt)
 
@@ -39,12 +71,13 @@ class SyllabusArchitect:
 class CurriculumSupervisor:
     """Agent 6: Critiques and refines the draft syllabus to perfection"""
     @staticmethod
-    async def refine_syllabus(draft_course: Course, user_context: str) -> Course:
+    async def refine_syllabus(draft_course: Course, user_context: str, unknown_prereqs: List[str]) -> Course:
         system_prompt = """
         You are 'The Curriculum Supervisor', a master educator and strict reviewer.
         You will be given a draft syllabus. Your job is to critique and refine it.
-        Ask yourself: Is this perfectly MECE? Are there missing fundamental prerequisites?
-        Does it flow logically for a user with the given context? Are the descriptions clear?
+        Ask yourself: Is this perfectly MECE?
+        Did the draft successfully cover the missing prerequisites at the beginning?
+        Does it reach a truly ADVANCED level at the end?
         Make the necessary additions, reorderings, or deletions to make it world-class.
         Output MUST be a JSON object with 'title' (str), 'target_skill' (str), and 'chapters' (list of dicts with 'title' and 'description').
         """
@@ -56,7 +89,9 @@ class CurriculumSupervisor:
             "chapters": [{"title": c.title, "description": c.description} for c in draft_course.chapters]
         }, indent=2)
 
-        user_prompt = f"User Context: {user_context}\n\nDraft Syllabus:\n{draft_json}\n\nPlease output the final, perfected JSON."
+        user_prompt = f"User Context: {user_context}\n"
+        user_prompt += f"Missing Prerequisites that MUST be covered early: {', '.join(unknown_prereqs)}\n\n"
+        user_prompt += f"Draft Syllabus:\n{draft_json}\n\nPlease output the final, perfected JSON."
 
         result_json = await generate_json(system_prompt, user_prompt)
 

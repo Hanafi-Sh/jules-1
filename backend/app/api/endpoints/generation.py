@@ -4,6 +4,7 @@ from typing import List, Optional
 import uuid
 
 from app.services.agents import (
+    PrerequisiteAssessor,
     SyllabusArchitect,
     CurriculumSupervisor,
     ChapterDesigner,
@@ -11,13 +12,18 @@ from app.services.agents import (
     Formatter,
     QuizMaster
 )
-from app.models.course import Course, Chapter, Level, Quiz
+from app.models.course import Course, Chapter, Level, Quiz, Prerequisite
 
 router = APIRouter()
+
+class PrerequisiteRequest(BaseModel):
+    target_skill: str
 
 class CourseRequest(BaseModel):
     target_skill: str
     user_context: str
+    known_prerequisites: List[str] = []
+    unknown_prerequisites: List[str] = []
 
 class ChapterDesignRequest(BaseModel):
     chapter_title: str
@@ -29,20 +35,32 @@ class LevelContentRequest(BaseModel):
     level_description: str
     target_skill: str
 
+@router.post("/prerequisites", response_model=List[Prerequisite])
+async def assess_prerequisites(request: PrerequisiteRequest):
+    """Agent 0: Identifies what fundamental skills are needed before learning the target skill."""
+    try:
+        prereqs = await PrerequisiteAssessor.get_prerequisites(request.target_skill)
+        return prereqs
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/syllabus", response_model=Course)
 async def generate_syllabus(request: CourseRequest):
-    """Generates the high-level course and chapters based on the user's request, then reviews it via Supervisor."""
+    """Generates the high-level course and chapters based on the user's request and missing prerequisites, then reviews it via Supervisor."""
     try:
-        # Agent 1: Draft the syllabus
+        # Agent 1: Draft the syllabus, taking prerequisites into account
         draft_course = await SyllabusArchitect.generate_syllabus(
             target_skill=request.target_skill,
-            user_context=request.user_context
+            user_context=request.user_context,
+            known_prereqs=request.known_prerequisites,
+            unknown_prereqs=request.unknown_prerequisites
         )
 
-        # Agent 6: Critique and Refine the syllabus
+        # Agent 6: Critique and Refine the syllabus to ensure basics are covered
         final_course = await CurriculumSupervisor.refine_syllabus(
             draft_course=draft_course,
-            user_context=request.user_context
+            user_context=request.user_context,
+            unknown_prereqs=request.unknown_prerequisites
         )
 
         return final_course

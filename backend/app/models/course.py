@@ -1,6 +1,11 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
+class Prerequisite(BaseModel):
+    id: str = Field(..., description="Unique identifier for the prerequisite")
+    title: str = Field(..., description="Title of the prerequisite skill")
+    description: str = Field(..., description="Why this is needed before learning the target skill")
+
 class Level(BaseModel):
     id: str = Field(..., description="Unique identifier for the level")
     title: str = Field(..., description="Title of the level")
