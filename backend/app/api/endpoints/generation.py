@@ -5,6 +5,7 @@ import uuid
 
 from app.services.agents import (
     SyllabusArchitect,
+    CurriculumSupervisor,
     ChapterDesigner,
     ContentAuthor,
     Formatter,
@@ -30,13 +31,21 @@ class LevelContentRequest(BaseModel):
 
 @router.post("/syllabus", response_model=Course)
 async def generate_syllabus(request: CourseRequest):
-    """Generates the high-level course and chapters based on the user's request."""
+    """Generates the high-level course and chapters based on the user's request, then reviews it via Supervisor."""
     try:
-        course = await SyllabusArchitect.generate_syllabus(
+        # Agent 1: Draft the syllabus
+        draft_course = await SyllabusArchitect.generate_syllabus(
             target_skill=request.target_skill,
             user_context=request.user_context
         )
-        return course
+
+        # Agent 6: Critique and Refine the syllabus
+        final_course = await CurriculumSupervisor.refine_syllabus(
+            draft_course=draft_course,
+            user_context=request.user_context
+        )
+
+        return final_course
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

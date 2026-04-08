@@ -1,4 +1,5 @@
 import uuid
+import json
 from typing import List
 from app.services.llm_client import generate_json, generate_text
 from app.models.course import Course, Chapter, Level, Quiz, QuizQuestion
@@ -13,11 +14,10 @@ class SyllabusArchitect:
         Output MUST be a JSON object with 'title' (str), 'target_skill' (str), and 'chapters' (list of dicts).
         Each chapter dict should have 'title' (str) and 'description' (str).
         Do NOT worry about markdown formatting. Just output the pure data structure.
-        Ensure you follow the user's specific context (e.g. if they know OOP, skip basic OOP).
+        Ensure you follow the user's specific context.
         """
         user_prompt = f"Target Skill: {target_skill}\nContext: {user_context}"
 
-        # Uses deepseek-reasoner by default
         result_json = await generate_json(system_prompt, user_prompt)
 
         chapters = []
@@ -36,6 +36,47 @@ class SyllabusArchitect:
             chapters=chapters
         )
 
+class CurriculumSupervisor:
+    """Agent 6: Critiques and refines the draft syllabus to perfection"""
+    @staticmethod
+    async def refine_syllabus(draft_course: Course, user_context: str) -> Course:
+        system_prompt = """
+        You are 'The Curriculum Supervisor', a master educator and strict reviewer.
+        You will be given a draft syllabus. Your job is to critique and refine it.
+        Ask yourself: Is this perfectly MECE? Are there missing fundamental prerequisites?
+        Does it flow logically for a user with the given context? Are the descriptions clear?
+        Make the necessary additions, reorderings, or deletions to make it world-class.
+        Output MUST be a JSON object with 'title' (str), 'target_skill' (str), and 'chapters' (list of dicts with 'title' and 'description').
+        """
+
+        # Serialize the draft for the prompt
+        draft_json = json.dumps({
+            "title": draft_course.title,
+            "target_skill": draft_course.target_skill,
+            "chapters": [{"title": c.title, "description": c.description} for c in draft_course.chapters]
+        }, indent=2)
+
+        user_prompt = f"User Context: {user_context}\n\nDraft Syllabus:\n{draft_json}\n\nPlease output the final, perfected JSON."
+
+        result_json = await generate_json(system_prompt, user_prompt)
+
+        chapters = []
+        for i, ch_data in enumerate(result_json.get("chapters", [])):
+            chapters.append(Chapter(
+                id=str(uuid.uuid4()),
+                title=ch_data["title"],
+                description=ch_data["description"],
+                order=i + 1
+            ))
+
+        # Keep the original Course ID but update everything else
+        return Course(
+            id=draft_course.id,
+            title=result_json.get("title", draft_course.title),
+            target_skill=draft_course.target_skill,
+            chapters=chapters
+        )
+
 class ChapterDesigner:
     """Agent 2: Breaks down a chapter into specific Levels"""
     @staticmethod
@@ -48,7 +89,6 @@ class ChapterDesigner:
         """
         user_prompt = f"Skill: {target_skill}\nChapter: {chapter_title}\nDescription: {chapter_desc}"
 
-        # Uses deepseek-reasoner by default
         result_json = await generate_json(system_prompt, user_prompt)
 
         levels = []
@@ -74,7 +114,6 @@ class ContentAuthor:
         """
         user_prompt = f"Skill: {target_skill}\nLevel Title: {level.title}\nLevel Description: {level.description}"
 
-        # Uses deepseek-reasoner by default
         content = await generate_text(system_prompt, user_prompt)
         return content
 
@@ -92,7 +131,6 @@ class Formatter:
         """
         user_prompt = f"Raw Content:\n\n{raw_content}"
 
-        # Explicitly use deepseek-chat for fast and simple formatting without reasoning overhead
         formatted_content = await generate_text(system_prompt, user_prompt, model="deepseek-chat")
         return formatted_content
 
@@ -108,7 +146,6 @@ class QuizMaster:
         """
         user_prompt = f"Content:\n{level_content}"
 
-        # Uses deepseek-reasoner by default
         result_json = await generate_json(system_prompt, user_prompt)
 
         questions = []
