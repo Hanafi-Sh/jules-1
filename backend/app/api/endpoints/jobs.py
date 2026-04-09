@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import uuid
 import json
 import logging
+import asyncio
 
 from app.db.session import get_db, SessionLocal
 from app.models.db_models import DBGenerationJob, DBCourseState
@@ -20,12 +21,21 @@ class JobCreateRequest(BaseModel):
 
 async def background_course_generation(job_id: str, request: JobCreateRequest):
     db = SessionLocal()
-    def update_progress(msg: str):
+
+    # SQLite concurrent write lock for our background async workers
+    db_lock = asyncio.Lock()
+
+    async def update_progress(msg: str):
         logger.info(f"[JOB {job_id}] {msg}")
-        job = db.query(DBGenerationJob).filter(DBGenerationJob.id == job_id).first()
-        if job:
-            job.progress_message = msg
-            db.commit()
+        async with db_lock:
+            try:
+                job = db.query(DBGenerationJob).filter(DBGenerationJob.id == job_id).first()
+                if job:
+                    job.progress_message = msg
+                    db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.error(f"[JOB {job_id}] Failed to update progress: {str(e)}")
 
     try:
         job = db.query(DBGenerationJob).filter(DBGenerationJob.id == job_id).first()
@@ -41,35 +51,38 @@ async def background_course_generation(job_id: str, request: JobCreateRequest):
 
         course_json = final_course.model_dump_json()
 
-        job.status = "completed"
-        job.progress_message = "Struktur Kurikulum selesai. Siap dipelajari."
-        job.course_data = course_json
-        db.commit()
+        async with db_lock:
+            job = db.query(DBGenerationJob).filter(DBGenerationJob.id == job_id).first()
+            job.status = "completed"
+            job.progress_message = "Struktur Kurikulum selesai. Siap dipelajari."
+            job.course_data = course_json
+            db.commit()
 
-        db_course = db.query(DBCourseState).filter(
-            DBCourseState.user_id == request.user_id,
-            DBCourseState.target_skill == request.target_skill
-        ).first()
+            db_course = db.query(DBCourseState).filter(
+                DBCourseState.user_id == request.user_id,
+                DBCourseState.target_skill == request.target_skill
+            ).first()
 
-        if db_course:
-            db_course.course_data = course_json
-        else:
-            db_course = DBCourseState(
-                id=str(uuid.uuid4()),
-                user_id=request.user_id,
-                target_skill=request.target_skill,
-                course_data=course_json
-            )
-            db.add(db_course)
-        db.commit()
+            if db_course:
+                db_course.course_data = course_json
+            else:
+                db_course = DBCourseState(
+                    id=str(uuid.uuid4()),
+                    user_id=request.user_id,
+                    target_skill=request.target_skill,
+                    course_data=course_json
+                )
+                db.add(db_course)
+            db.commit()
 
     except Exception as e:
         logger.error(f"[JOB {job_id}] Failed: {str(e)}")
-        job = db.query(DBGenerationJob).filter(DBGenerationJob.id == job_id).first()
-        if job:
-            job.status = "failed"
-            job.progress_message = f"Error: {str(e)}"
-            db.commit()
+        async with db_lock:
+            job = db.query(DBGenerationJob).filter(DBGenerationJob.id == job_id).first()
+            if job:
+                job.status = "failed"
+                job.progress_message = f"Error: {str(e)}"
+                db.commit()
     finally:
         db.close()
 
