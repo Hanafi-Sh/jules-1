@@ -1,0 +1,9 @@
+
+# API Logs
+*.jsonl
+*.log
+script_output.log
+
+# Generated Content
+*.md
+!README.md

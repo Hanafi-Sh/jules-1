@@ -1,6 +1,7 @@
 import json
 import re
 import logging
+from datetime import datetime
 from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from app.core.config import settings
@@ -14,6 +15,21 @@ client = AsyncOpenAI(
     api_key=settings.DEEPSEEK_API_KEY or "dummy",
     base_url="https://api.deepseek.com/v1"
 )
+
+def log_api_call(system_prompt: str, user_prompt: str, response: str, model: str):
+    """Saves every single token spent to a local JSONL file so no API call is ever wasted."""
+    try:
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "model": model,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "response": response
+        }
+        with open("llm_api_logs.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.error(f"Failed to log API call: {str(e)}")
 
 def extract_json_from_text(text: str) -> dict:
     """Safely extracts JSON from a text block that might contain markdown formatting."""
@@ -47,9 +63,7 @@ def extract_json_from_text(text: str) -> dict:
 )
 async def generate_json(system_prompt: str, user_prompt: str, model="deepseek-reasoner") -> dict:
     """Generates JSON output. Defaults to deepseek-reasoner for deep thinking. Includes auto-retry."""
-
     full_user_prompt = f"{user_prompt}\n\nIMPORTANT: You must output ONLY valid JSON without any surrounding text or explanation outside of the JSON block."
-
     response = await client.chat.completions.create(
         model=model,
         messages=[
@@ -59,6 +73,7 @@ async def generate_json(system_prompt: str, user_prompt: str, model="deepseek-re
         temperature=0.6,
     )
     content = response.choices[0].message.content
+    log_api_call(system_prompt, full_user_prompt, content, model)
     return extract_json_from_text(content)
 
 @retry(
@@ -77,4 +92,6 @@ async def generate_text(system_prompt: str, user_prompt: str, model="deepseek-re
         ],
         temperature=0.7,
     )
-    return response.choices[0].message.content
+    content = response.choices[0].message.content
+    log_api_call(system_prompt, user_prompt, content, model)
+    return content
