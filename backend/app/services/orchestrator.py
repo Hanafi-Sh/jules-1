@@ -10,53 +10,52 @@ from app.services.agents import (
     PhaseDesigner, PhaseReviewer,
     ChapterDesigner, ChapterReviewer
 )
+from app.services.json_structurer import JSONStructurer
 
 logger = logging.getLogger(__name__)
 api_semaphore = asyncio.Semaphore(3)
 
 async def generate_structural_tree_async(target_skill: str, user_context: str, update_progress_cb) -> Course:
-    """Generates the massive hierarchical JSON structure (Course -> Phase -> Chapter -> Level) WITHOUT content."""
+    """Generates the hierarchical JSON structure using the decoupled Raw Text -> JSON pattern."""
     try:
-        # Step 1: Triage (Agent 0 & 0.1)
+        # Step 1: Triage
         update_progress_cb("Menganalisis kompleksitas dan prasyarat topik...")
-        draft_score, draft_prereqs = await TriageAnalyst.analyze_topic(target_skill)
-        score, final_prereqs = await TriageReviewer.refine_analysis(draft_score, draft_prereqs, target_skill)
+        draft_triage_text = await TriageAnalyst.analyze_topic(target_skill)
+        refined_triage_text = await TriageReviewer.refine_analysis(draft_triage_text, target_skill)
+        score, final_prereqs = await JSONStructurer.extract_triage(refined_triage_text)
 
-        # We assume for this MVP that the user does not know any prereqs and we must teach them all
         unknown_prereqs = [p.title for p in final_prereqs]
 
-        # Step 2: Syllabus/Macro Pillars (Agent 1 & 1.1)
+        # Step 2: Syllabus/Macro Pillars
         update_progress_cb(f"Merancang Pilar Utama (Kompleksitas: {score}/10)...")
-        draft_title, draft_phases = await SyllabusArchitect.generate_phases(target_skill, user_context, score, unknown_prereqs)
-        final_title, final_phases = await SyllabusReviewer.refine_phases(draft_title, draft_phases, target_skill, unknown_prereqs)
+        draft_phases_text = await SyllabusArchitect.generate_phases(target_skill, user_context, score, unknown_prereqs)
+        refined_phases_text = await SyllabusReviewer.refine_phases(draft_phases_text, target_skill, unknown_prereqs)
+        final_title, final_phases = await JSONStructurer.extract_phases(refined_phases_text)
 
-        # Create the Course shell
         course = Course(
             id="temp", title=final_title, target_skill=target_skill,
             complexity_score=score, prerequisites=final_prereqs, phases=final_phases
         )
-
-        # Helper string for caching
         course_context_json = course.model_dump_json(exclude={"phases": {"__all__": {"chapters"}}})
 
-        # Step 3: Phase -> Chapter Breakdown (Agent 2 & 2.1)
+        # Step 3: Phase -> Chapter
         update_progress_cb("Memecah Pilar menjadi Bab Spesifik...")
         async def process_phase(phase):
             async with api_semaphore:
-                draft_ch = await PhaseDesigner.design_chapters(phase.title, phase.description, target_skill, course_context_json)
-                phase.chapters = await PhaseReviewer.refine_chapters(draft_ch, phase.title, course_context_json)
+                draft_ch_text = await PhaseDesigner.design_chapters(phase.title, phase.description, target_skill, course_context_json)
+                refined_ch_text = await PhaseReviewer.refine_chapters(draft_ch_text, phase.title, course_context_json)
+                phase.chapters = await JSONStructurer.extract_chapters(refined_ch_text)
 
         await asyncio.gather(*[process_phase(p) for p in course.phases])
-
-        # Update cache string
         course_context_json = course.model_dump_json(exclude={"phases": {"__all__": {"chapters": {"__all__": {"levels"}}}}})
 
-        # Step 4: Chapter -> Level Breakdown (Agent 3 & 3.1)
+        # Step 4: Chapter -> Level
         update_progress_cb("Mendesain Level (Micro) untuk setiap Bab...")
         async def process_chapter(chapter):
             async with api_semaphore:
-                draft_lvl = await ChapterDesigner.design_levels(chapter.title, chapter.description, target_skill, course_context_json)
-                chapter.levels = await ChapterReviewer.refine_levels(draft_lvl, chapter.title, course_context_json)
+                draft_lvl_text = await ChapterDesigner.design_levels(chapter.title, chapter.description, target_skill, course_context_json)
+                refined_lvl_text = await ChapterReviewer.refine_levels(draft_lvl_text, chapter.title, course_context_json)
+                chapter.levels = await JSONStructurer.extract_levels(refined_lvl_text)
 
         chapter_tasks = []
         for phase in course.phases:
