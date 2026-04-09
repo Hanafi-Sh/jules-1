@@ -9,8 +9,7 @@ class PrerequisiteAssessor:
     @staticmethod
     async def get_prerequisites(target_skill: str) -> List[Prerequisite]:
         system_prompt = """
-        You are 'The Assessor', a master educator.
-        Your job is to identify the fundamental prerequisite skills someone MUST know before they can master the target skill to an advanced level.
+        You are 'The Assessor' (Agent 0). Your job is to identify the fundamental prerequisite skills someone MUST know before they can master the target skill.
         Break it down into 3-6 distinct prerequisites.
         Output MUST be a JSON object with a 'prerequisites' array.
         Each prerequisite dict should have 'title' (str) and 'description' (str) explaining why it is needed.
@@ -26,7 +25,30 @@ class PrerequisiteAssessor:
                 title=p_data["title"],
                 description=p_data["description"]
             ))
+        return prereqs
 
+class PrerequisiteReviewer:
+    """Agent 0.1: Reviews and refines the prerequisites"""
+    @staticmethod
+    async def refine_prerequisites(draft_prereqs: List[Prerequisite], target_skill: str) -> List[Prerequisite]:
+        system_prompt = """
+        You are 'The Assessor Reviewer' (Agent 0.1). Review the draft prerequisites for the target skill.
+        Are they truly foundational? Are any crucial basics missing? Are any redundant?
+        Improve them to be the perfect starting checklist.
+        Output MUST be a JSON object with a 'prerequisites' array containing 'title' and 'description'.
+        """
+        draft_json = json.dumps([{"title": p.title, "description": p.description} for p in draft_prereqs], indent=2)
+        user_prompt = f"Target Skill: {target_skill}\nDraft Prerequisites:\n{draft_json}\n\nProvide the refined JSON."
+
+        result_json = await generate_json(system_prompt, user_prompt)
+
+        prereqs = []
+        for p_data in result_json.get("prerequisites", []):
+            prereqs.append(Prerequisite(
+                id=str(uuid.uuid4()),
+                title=p_data["title"],
+                description=p_data["description"]
+            ))
         return prereqs
 
 class SyllabusArchitect:
@@ -34,21 +56,13 @@ class SyllabusArchitect:
     @staticmethod
     async def generate_syllabus(target_skill: str, user_context: str, known_prereqs: List[str], unknown_prereqs: List[str]) -> Course:
         system_prompt = """
-        You are 'The Syllabus Architect'. Your job is to deeply think about and create a MECE (Mutually Exclusive, Collectively Exhaustive) syllabus for learning a specific skill up to an ADVANCED level.
-
-        CRITICAL INSTRUCTIONS:
-        1. The user ALREADY KNOWS certain prerequisite topics. DO NOT include basic chapters about these.
-        2. The user DOES NOT KNOW certain other prerequisite topics. You MUST create the initial chapters to thoroughly teach these missing prerequisites before diving into the main target skill.
-        3. Ensure the progression is flawless, starting from their missing fundamentals all the way to advanced mastery of the target skill.
-
-        Output MUST be a JSON object with 'title' (str), 'target_skill' (str), and 'chapters' (list of dicts).
-        Each chapter dict should have 'title' (str) and 'description' (str).
-        Do NOT worry about markdown formatting. Just output the pure data structure.
+        You are 'The Syllabus Architect' (Agent 1). Create a MECE syllabus for learning a specific skill up to an ADVANCED level.
+        CRITICAL: Skip known prerequisites. MUST include chapters to teach unknown prerequisites early on.
+        Output MUST be a JSON object with 'title' (str), 'target_skill' (str), and 'chapters' (list of dicts with 'title' and 'description').
         """
-
         user_prompt = f"Target Skill: {target_skill}\nUser Context: {user_context}\n"
-        user_prompt += f"\nPrerequisites User ALREADY KNOWS (Skip these basics):\n- " + "\n- ".join(known_prereqs) if known_prereqs else "\nPrerequisites User ALREADY KNOWS: None"
-        user_prompt += f"\n\nPrerequisites User DOES NOT KNOW (You MUST teach these first):\n- " + "\n- ".join(unknown_prereqs) if unknown_prereqs else "\nPrerequisites User DOES NOT KNOW: None"
+        user_prompt += f"Known Prereqs: {', '.join(known_prereqs) if known_prereqs else 'None'}\n"
+        user_prompt += f"Unknown Prereqs to teach: {', '.join(unknown_prereqs) if unknown_prereqs else 'None'}\n"
 
         result_json = await generate_json(system_prompt, user_prompt)
 
@@ -68,30 +82,17 @@ class SyllabusArchitect:
             chapters=chapters
         )
 
-class CurriculumSupervisor:
-    """Agent 6: Critiques and refines the draft syllabus to perfection"""
+class SyllabusReviewer:
+    """Agent 1.1: Critiques and refines the draft syllabus (formerly Agent 6)"""
     @staticmethod
     async def refine_syllabus(draft_course: Course, user_context: str, unknown_prereqs: List[str]) -> Course:
         system_prompt = """
-        You are 'The Curriculum Supervisor', a master educator and strict reviewer.
-        You will be given a draft syllabus. Your job is to critique and refine it.
-        Ask yourself: Is this perfectly MECE?
-        Did the draft successfully cover the missing prerequisites at the beginning?
-        Does it reach a truly ADVANCED level at the end?
-        Make the necessary additions, reorderings, or deletions to make it world-class.
+        You are 'The Syllabus Reviewer' (Agent 1.1). Review the draft syllabus.
+        Is it perfectly MECE? Are unknown prerequisites adequately covered at the start? Does it reach an advanced level?
         Output MUST be a JSON object with 'title' (str), 'target_skill' (str), and 'chapters' (list of dicts with 'title' and 'description').
         """
-
-        # Serialize the draft for the prompt
-        draft_json = json.dumps({
-            "title": draft_course.title,
-            "target_skill": draft_course.target_skill,
-            "chapters": [{"title": c.title, "description": c.description} for c in draft_course.chapters]
-        }, indent=2)
-
-        user_prompt = f"User Context: {user_context}\n"
-        user_prompt += f"Missing Prerequisites that MUST be covered early: {', '.join(unknown_prereqs)}\n\n"
-        user_prompt += f"Draft Syllabus:\n{draft_json}\n\nPlease output the final, perfected JSON."
+        draft_json = json.dumps({"title": draft_course.title, "target_skill": draft_course.target_skill, "chapters": [{"title": c.title, "description": c.description} for c in draft_course.chapters]}, indent=2)
+        user_prompt = f"User Context: {user_context}\nUnknown Prereqs: {', '.join(unknown_prereqs)}\nDraft:\n{draft_json}"
 
         result_json = await generate_json(system_prompt, user_prompt)
 
@@ -103,24 +104,15 @@ class CurriculumSupervisor:
                 description=ch_data["description"],
                 order=i + 1
             ))
-
-        # Keep the original Course ID but update everything else
-        return Course(
-            id=draft_course.id,
-            title=result_json.get("title", draft_course.title),
-            target_skill=draft_course.target_skill,
-            chapters=chapters
-        )
+        return Course(id=draft_course.id, title=result_json.get("title", draft_course.title), target_skill=draft_course.target_skill, chapters=chapters)
 
 class ChapterDesigner:
     """Agent 2: Breaks down a chapter into specific Levels"""
     @staticmethod
     async def design_chapter(chapter_title: str, chapter_desc: str, target_skill: str) -> List[Level]:
         system_prompt = """
-        You are 'The Chapter Designer'. Your job is to deeply analyze a high-level chapter and break it down into logical, step-by-step 'Levels' (sub-topics).
-        The levels should be MECE, progressing smoothly from fundamental to specific for this chapter without overlapping concepts.
-        Output MUST be a JSON object with a 'levels' array.
-        Each level dict should have 'title' (str) and 'description' (str).
+        You are 'The Chapter Designer' (Agent 2). Break down the chapter into MECE 'Levels' (sub-topics) progressing from fundamental to specific.
+        Output MUST be a JSON object with a 'levels' array containing 'title' and 'description'.
         """
         user_prompt = f"Skill: {target_skill}\nChapter: {chapter_title}\nDescription: {chapter_desc}"
 
@@ -128,13 +120,25 @@ class ChapterDesigner:
 
         levels = []
         for i, lvl_data in enumerate(result_json.get("levels", [])):
-            levels.append(Level(
-                id=str(uuid.uuid4()),
-                title=lvl_data["title"],
-                description=lvl_data["description"],
-                order=i + 1
-            ))
+            levels.append(Level(id=str(uuid.uuid4()), title=lvl_data["title"], description=lvl_data["description"], order=i + 1))
+        return levels
 
+class ChapterReviewer:
+    """Agent 2.1: Reviews the levels in a chapter"""
+    @staticmethod
+    async def refine_chapter(draft_levels: List[Level], chapter_title: str, chapter_desc: str) -> List[Level]:
+        system_prompt = """
+        You are 'The Chapter Reviewer' (Agent 2.1). Review the sub-topic levels for this chapter.
+        Are they truly MECE? Is the progression logical without overlaps? Add, remove, or refine levels as needed.
+        Output MUST be a JSON object with a 'levels' array containing 'title' and 'description'.
+        """
+        draft_json = json.dumps([{"title": l.title, "description": l.description} for l in draft_levels], indent=2)
+        user_prompt = f"Chapter: {chapter_title} - {chapter_desc}\nDraft Levels:\n{draft_json}"
+
+        result_json = await generate_json(system_prompt, user_prompt)
+        levels = []
+        for i, lvl_data in enumerate(result_json.get("levels", [])):
+            levels.append(Level(id=str(uuid.uuid4()), title=lvl_data["title"], description=lvl_data["description"], order=i + 1))
         return levels
 
 class ContentAuthor:
@@ -142,71 +146,82 @@ class ContentAuthor:
     @staticmethod
     async def write_content(level: Level, target_skill: str) -> str:
         system_prompt = """
-        You are 'The Content Author'. Write an extremely comprehensive, deep, and engaging textbook content for a specific Level.
-        Use deep reasoning to explain complex topics. Use analogies, clear explanations, and code examples if it's a technical skill.
-        DO NOT worry about formatting UI elements, beautiful markdown, or strict structural tags yet.
-        Focus 100% on the highest quality pedagogy and content depth. The Formatter will handle presentation later.
+        You are 'The Content Author' (Agent 3). Write comprehensive, deep, and engaging textbook content for this Level.
+        Use deep reasoning to explain complex topics. DO NOT worry about formatting UI elements yet.
         """
         user_prompt = f"Skill: {target_skill}\nLevel Title: {level.title}\nLevel Description: {level.description}"
+        return await generate_text(system_prompt, user_prompt)
 
-        content = await generate_text(system_prompt, user_prompt)
-        return content
+class ContentReviewer:
+    """Agent 3.1: Reviews and refines textbook content"""
+    @staticmethod
+    async def refine_content(draft_content: str, level_title: str) -> str:
+        system_prompt = """
+        You are 'The Content Reviewer' (Agent 3.1). Read the draft textbook content.
+        Your job is to identify and fix hallucinations, improve analogies, ensure pedagogical clarity, and deepen the explanation if it's too shallow.
+        Output ONLY the improved raw markdown text. No pleasantries.
+        """
+        user_prompt = f"Level Title: {level_title}\nDraft Content:\n\n{draft_content}"
+        return await generate_text(system_prompt, user_prompt)
 
 class Formatter:
-    """Agent 4: Formats the content into UI-ready markdown"""
+    """Agent 4: Formats the content into UI-ready markdown (No reviewer needed)"""
     @staticmethod
     async def format_content(raw_content: str) -> str:
         system_prompt = """
-        You are 'The Formatter'. Your job is to take raw, high-quality textbook text and format it beautifully for a UI 'Vertical Journey'.
-        - Use clean Markdown.
-        - Add ':::caution' or ':::info' blocks for important notes.
-        - Ensure code blocks have proper syntax highlighting tags.
-        - Break up very long paragraphs into readable micro-chunks.
-        Do not change the underlying meaning or pedadogy of the content, just optimize the presentation and readability.
+        You are 'The Formatter' (Agent 4). Format the text beautifully for a UI 'Vertical Journey'.
+        Add ':::caution' or ':::info' blocks. Break up long paragraphs. Output raw markdown.
         """
-        user_prompt = f"Raw Content:\n\n{raw_content}"
-
-        formatted_content = await generate_text(system_prompt, user_prompt, model="deepseek-chat")
-        return formatted_content
+        return await generate_text(system_prompt, f"Raw Content:\n\n{raw_content}", model="deepseek-chat")
 
 class QuizMaster:
     """Agent 5: Generates validation questions"""
     @staticmethod
     async def generate_quiz(level_content: str, level_id: str) -> Quiz:
         system_prompt = """
-        You are 'The Quiz Master'. Use deep reasoning to generate 2-3 high-quality multiple-choice questions that test the user's true understanding of the provided content.
-        Avoid obvious questions. Test concepts, not just rote memorization.
-        Output MUST be a JSON object with a 'questions' array.
-        Each question object MUST have 'question' (str), 'options' (list of str), 'correct_answer' (str), and 'explanation' (str).
+        You are 'The Quiz Master' (Agent 5). Generate 2-3 high-quality multiple-choice questions based on the content.
+        Output MUST be a JSON object with a 'questions' array ('question', 'options', 'correct_answer', 'explanation').
         """
-        user_prompt = f"Content:\n{level_content}"
-
-        result_json = await generate_json(system_prompt, user_prompt)
-
-        questions = []
-        for q_data in result_json.get("questions", []):
-            questions.append(QuizQuestion(
-                question=q_data["question"],
-                options=q_data["options"],
-                correct_answer=q_data["correct_answer"],
-                explanation=q_data["explanation"]
-            ))
-
+        result_json = await generate_json(system_prompt, f"Content:\n{level_content}")
+        questions = [QuizQuestion(**q) for q in result_json.get("questions", [])]
         return Quiz(level_id=level_id, questions=questions)
 
+class QuizReviewer:
+    """Agent 5.1: Reviews the validation questions"""
+    @staticmethod
+    async def refine_quiz(draft_quiz: Quiz, level_content: str) -> Quiz:
+        system_prompt = """
+        You are 'The Quiz Reviewer' (Agent 5.1). Review the draft quiz questions against the content.
+        Ensure the correct answer is factually accurate, options are unambiguous, and explanations are clear.
+        Output MUST be a JSON object with a 'questions' array ('question', 'options', 'correct_answer', 'explanation').
+        """
+        draft_json = json.dumps([q.model_dump() for q in draft_quiz.questions], indent=2)
+        user_prompt = f"Content:\n{level_content}\n\nDraft Quiz:\n{draft_json}"
+        result_json = await generate_json(system_prompt, user_prompt)
+        questions = [QuizQuestion(**q) for q in result_json.get("questions", [])]
+        return Quiz(level_id=draft_quiz.level_id, questions=questions)
+
 class QuestionSuggester:
-    """Agent 7: Analyzes level content and suggests highly contextual follow-up questions"""
+    """Agent 7: Analyzes level content and suggests follow-up questions"""
     @staticmethod
     async def suggest_questions(level_content: str) -> List[str]:
         system_prompt = """
-        You are 'The Curiosity Agent'. Your job is to read a piece of educational textbook content and identify the most complex technical terms or abstract concepts mentioned in it.
-        Then, generate 3-5 highly engaging, contextual follow-up questions that a curious student might want to ask to understand those specific terms deeper.
-        For example, if the text mentions PyTorch tensors and .backward(), a good question might be "Apa sebenarnya tensor itu secara matematis?" or "Bagaimana cara kerja .backward() di balik layar?".
-
-        Output MUST be a JSON object with a 'questions' array containing the list of question strings.
-        Keep the questions natural and inquisitive.
+        You are 'The Curiosity Agent' (Agent 7). Identify complex technical terms in the text and generate 3-5 engaging follow-up questions (e.g., "Apa itu tensor?").
+        Output MUST be a JSON object with a 'questions' array of strings.
         """
-        user_prompt = f"Textbook Content:\n\n{level_content}"
+        result_json = await generate_json(system_prompt, f"Textbook Content:\n\n{level_content}")
+        return result_json.get("questions", [])
 
+class QuestionReviewer:
+    """Agent 7.1: Reviews suggested follow-up questions"""
+    @staticmethod
+    async def refine_questions(draft_questions: List[str], level_content: str) -> List[str]:
+        system_prompt = """
+        You are 'The Curiosity Reviewer' (Agent 7.1). Review the draft follow-up questions based on the text.
+        Make them more natural, highly contextual, and deeply inquisitive.
+        Output MUST be a JSON object with a 'questions' array of strings.
+        """
+        draft_json = json.dumps({"questions": draft_questions})
+        user_prompt = f"Content:\n{level_content}\n\nDraft Questions:\n{draft_json}"
         result_json = await generate_json(system_prompt, user_prompt)
         return result_json.get("questions", [])

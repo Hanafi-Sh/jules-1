@@ -1,17 +1,16 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List
 import uuid
 
 from app.services.agents import (
-    PrerequisiteAssessor,
-    SyllabusArchitect,
-    CurriculumSupervisor,
-    ChapterDesigner,
-    ContentAuthor,
+    PrerequisiteAssessor, PrerequisiteReviewer,
+    SyllabusArchitect, SyllabusReviewer,
+    ChapterDesigner, ChapterReviewer,
+    ContentAuthor, ContentReviewer,
     Formatter,
-    QuizMaster,
-    QuestionSuggester
+    QuizMaster, QuizReviewer,
+    QuestionSuggester, QuestionReviewer
 )
 from app.models.course import Course, Chapter, Level, Quiz, Prerequisite
 
@@ -38,72 +37,73 @@ class LevelContentRequest(BaseModel):
 
 @router.post("/prerequisites", response_model=List[Prerequisite])
 async def assess_prerequisites(request: PrerequisiteRequest):
-    """Agent 0: Identifies what fundamental skills are needed before learning the target skill."""
     try:
-        prereqs = await PrerequisiteAssessor.get_prerequisites(request.target_skill)
-        return prereqs
+        # Agent 0
+        draft_prereqs = await PrerequisiteAssessor.get_prerequisites(request.target_skill)
+        # Agent 0.1
+        final_prereqs = await PrerequisiteReviewer.refine_prerequisites(draft_prereqs, request.target_skill)
+        return final_prereqs
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/syllabus", response_model=Course)
 async def generate_syllabus(request: CourseRequest):
-    """Generates the high-level course and chapters based on the user's request and missing prerequisites, then reviews it via Supervisor."""
     try:
-        # Agent 1: Draft the syllabus, taking prerequisites into account
+        # Agent 1
         draft_course = await SyllabusArchitect.generate_syllabus(
             target_skill=request.target_skill,
             user_context=request.user_context,
             known_prereqs=request.known_prerequisites,
             unknown_prereqs=request.unknown_prerequisites
         )
-
-        # Agent 6: Critique and Refine the syllabus to ensure basics are covered
-        final_course = await CurriculumSupervisor.refine_syllabus(
+        # Agent 1.1 (formerly Agent 6)
+        final_course = await SyllabusReviewer.refine_syllabus(
             draft_course=draft_course,
             user_context=request.user_context,
             unknown_prereqs=request.unknown_prerequisites
         )
-
         return final_course
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/chapter/{chapter_id}/design", response_model=List[Level])
 async def design_chapter(chapter_id: str, request: ChapterDesignRequest):
-    """Breaks down a specific chapter into levels."""
     try:
-        levels = await ChapterDesigner.design_chapter(
+        # Agent 2
+        draft_levels = await ChapterDesigner.design_chapter(
             chapter_title=request.chapter_title,
             chapter_desc=request.chapter_description,
             target_skill=request.target_skill
         )
-        # Inherit chapter id reference if needed
-        return levels
+        # Agent 2.1
+        final_levels = await ChapterReviewer.refine_chapter(
+            draft_levels=draft_levels,
+            chapter_title=request.chapter_title,
+            chapter_desc=request.chapter_description
+        )
+        return final_levels
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/level/{level_id}/content", response_model=Level)
 async def generate_level_content(level_id: str, request: LevelContentRequest):
-    """Generates and formats the content for a specific level, and adds suggested follow-up questions."""
     try:
-        # Create a mock level object to pass to the ContentAuthor
-        level = Level(
-            id=level_id,
-            title=request.level_title,
-            description=request.level_description,
-            order=0  # order doesn't matter here
-        )
+        level = Level(id=level_id, title=request.level_title, description=request.level_description, order=0)
 
-        # Agent 3: Generate Raw Content
-        raw_content = await ContentAuthor.write_content(level, request.target_skill)
+        # Agent 3
+        draft_content = await ContentAuthor.write_content(level, request.target_skill)
+        # Agent 3.1
+        refined_content = await ContentReviewer.refine_content(draft_content, level.title)
 
-        # Agent 4: Format Content
-        formatted_content = await Formatter.format_content(raw_content)
+        # Agent 4
+        formatted_content = await Formatter.format_content(refined_content)
         level.content = formatted_content
 
-        # Agent 7: Suggest follow-up questions
-        suggested_questions = await QuestionSuggester.suggest_questions(formatted_content)
-        level.suggested_questions = suggested_questions
+        # Agent 7
+        draft_questions = await QuestionSuggester.suggest_questions(formatted_content)
+        # Agent 7.1
+        final_questions = await QuestionReviewer.refine_questions(draft_questions, formatted_content)
+        level.suggested_questions = final_questions
 
         return level
     except Exception as e:
@@ -114,12 +114,14 @@ class QuizRequest(BaseModel):
 
 @router.post("/level/{level_id}/quiz", response_model=Quiz)
 async def generate_quiz(level_id: str, request: QuizRequest):
-    """Generates validation quiz for a level's content."""
     try:
-        quiz = await QuizMaster.generate_quiz(
+        # Agent 5
+        draft_quiz = await QuizMaster.generate_quiz(
             level_content=request.level_content,
             level_id=level_id
         )
-        return quiz
+        # Agent 5.1
+        final_quiz = await QuizReviewer.refine_quiz(draft_quiz, request.level_content)
+        return final_quiz
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
