@@ -11,21 +11,30 @@ class Level(BaseModel):
     title: str = Field(..., description="Title of the level")
     description: str = Field(..., description="Brief description of what will be learned")
     order: int = Field(..., description="Order of the level in the chapter")
-    content: Optional[str] = Field(None, description="The formatted markdown content for this level")
-    suggested_questions: Optional[List[str]] = Field(default_factory=list, description="AI suggested follow-up questions for deeper understanding")
+    content: Optional[str] = Field(None, description="The formatted markdown content for this level. None if not yet generated.")
+    suggested_questions: Optional[List[str]] = Field(default_factory=list, description="AI suggested follow-up questions")
 
 class Chapter(BaseModel):
     id: str = Field(..., description="Unique identifier for the chapter")
     title: str = Field(..., description="Title of the chapter")
     description: str = Field(..., description="Brief description of the chapter")
-    order: int = Field(..., description="Order of the chapter in the course")
+    order: int = Field(..., description="Order of the chapter in the phase")
     levels: List[Level] = Field(default_factory=list, description="List of levels in this chapter")
+
+class Phase(BaseModel):
+    id: str = Field(..., description="Unique identifier for the Phase (Macro Pillar)")
+    title: str = Field(..., description="Title of the phase")
+    description: str = Field(..., description="High level description of this learning phase")
+    order: int = Field(..., description="Order of the phase in the course")
+    chapters: List[Chapter] = Field(default_factory=list, description="List of specific chapters in this phase")
 
 class Course(BaseModel):
     id: str = Field(..., description="Unique identifier for the course")
     title: str = Field(..., description="Title of the course based on user input")
     target_skill: str = Field(..., description="The main skill the user wants to master")
-    chapters: List[Chapter] = Field(default_factory=list, description="List of chapters in this course")
+    complexity_score: int = Field(1, description="1-10 score indicating how deep/complex the topic is")
+    prerequisites: List[Prerequisite] = Field(default_factory=list, description="List of required foundational skills")
+    phases: List[Phase] = Field(default_factory=list, description="List of Macro Pillars in this course")
 
 class QuizQuestion(BaseModel):
     question: str = Field(..., description="The question text")

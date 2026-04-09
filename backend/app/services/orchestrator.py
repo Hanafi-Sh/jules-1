@@ -1,123 +1,74 @@
 import asyncio
 import json
-import uuid
 import logging
-from typing import Dict, Any, List
+from typing import List
 
-from app.models.course import Course, Chapter, Level, Quiz
+from app.models.course import Course
 from app.services.agents import (
-    PrerequisiteAssessor, PrerequisiteReviewer,
+    TriageAnalyst, TriageReviewer,
     SyllabusArchitect, SyllabusReviewer,
-    ChapterDesigner, ChapterReviewer,
-    ContentAuthor, ContentReviewer,
-    Formatter,
-    QuizMaster, QuizReviewer,
-    QuestionSuggester, QuestionReviewer
+    PhaseDesigner, PhaseReviewer,
+    ChapterDesigner, ChapterReviewer
 )
 
 logger = logging.getLogger(__name__)
+api_semaphore = asyncio.Semaphore(3)
 
-# Semaphore to prevent hitting API rate limits during massive parallel processing
-MAX_CONCURRENT_API_CALLS = 5
-api_semaphore = asyncio.Semaphore(MAX_CONCURRENT_API_CALLS)
-
-async def process_level(level: Level, target_skill: str, course_context_json: str, update_progress_cb) -> None:
-    """Processes a single Level end-to-end (Author -> Formatter -> Quiz -> Questions)."""
+async def generate_structural_tree_async(target_skill: str, user_context: str, update_progress_cb) -> Course:
+    """Generates the massive hierarchical JSON structure (Course -> Phase -> Chapter -> Level) WITHOUT content."""
     try:
-        # Agent 3 & 3.1
-        async with api_semaphore:
-            update_progress_cb(f"Menulis materi untuk level: {level.title}...")
-            draft_content = await ContentAuthor.write_content(level, target_skill, course_context_json)
-            refined_content = await ContentReviewer.refine_content(draft_content, level.title, course_context_json)
+        # Step 1: Triage (Agent 0 & 0.1)
+        update_progress_cb("Menganalisis kompleksitas dan prasyarat topik...")
+        draft_score, draft_prereqs = await TriageAnalyst.analyze_topic(target_skill)
+        score, final_prereqs = await TriageReviewer.refine_analysis(draft_score, draft_prereqs, target_skill)
 
-        # Agent 4
-        async with api_semaphore:
-            update_progress_cb(f"Memformat materi untuk level: {level.title}...")
-            formatted_content = await Formatter.format_content(refined_content)
-            level.content = formatted_content
+        # We assume for this MVP that the user does not know any prereqs and we must teach them all
+        unknown_prereqs = [p.title for p in final_prereqs]
 
-        # We can run Quiz and Questions in parallel because they both just depend on formatted_content
-        async def process_quiz():
+        # Step 2: Syllabus/Macro Pillars (Agent 1 & 1.1)
+        update_progress_cb(f"Merancang Pilar Utama (Kompleksitas: {score}/10)...")
+        draft_title, draft_phases = await SyllabusArchitect.generate_phases(target_skill, user_context, score, unknown_prereqs)
+        final_title, final_phases = await SyllabusReviewer.refine_phases(draft_title, draft_phases, target_skill, unknown_prereqs)
+
+        # Create the Course shell
+        course = Course(
+            id="temp", title=final_title, target_skill=target_skill,
+            complexity_score=score, prerequisites=final_prereqs, phases=final_phases
+        )
+
+        # Helper string for caching
+        course_context_json = course.model_dump_json(exclude={"phases": {"__all__": {"chapters"}}})
+
+        # Step 3: Phase -> Chapter Breakdown (Agent 2 & 2.1)
+        update_progress_cb("Memecah Pilar menjadi Bab Spesifik...")
+        async def process_phase(phase):
             async with api_semaphore:
-                draft_quiz = await QuizMaster.generate_quiz(formatted_content, level.id, course_context_json)
-                return await QuizReviewer.refine_quiz(draft_quiz, formatted_content, course_context_json)
+                draft_ch = await PhaseDesigner.design_chapters(phase.title, phase.description, target_skill, course_context_json)
+                phase.chapters = await PhaseReviewer.refine_chapters(draft_ch, phase.title, course_context_json)
 
-        async def process_questions():
+        await asyncio.gather(*[process_phase(p) for p in course.phases])
+
+        # Update cache string
+        course_context_json = course.model_dump_json(exclude={"phases": {"__all__": {"chapters": {"__all__": {"levels"}}}}})
+
+        # Step 4: Chapter -> Level Breakdown (Agent 3 & 3.1)
+        update_progress_cb("Mendesain Level (Micro) untuk setiap Bab...")
+        async def process_chapter(chapter):
             async with api_semaphore:
-                draft_questions = await QuestionSuggester.suggest_questions(formatted_content, course_context_json)
-                return await QuestionReviewer.refine_questions(draft_questions, formatted_content, course_context_json)
+                draft_lvl = await ChapterDesigner.design_levels(chapter.title, chapter.description, target_skill, course_context_json)
+                chapter.levels = await ChapterReviewer.refine_levels(draft_lvl, chapter.title, course_context_json)
 
-        update_progress_cb(f"Membuat Kuis & Pertanyaan untuk level: {level.title}...")
-        quiz, questions = await asyncio.gather(process_quiz(), process_questions())
+        chapter_tasks = []
+        for phase in course.phases:
+            for chapter in phase.chapters:
+                chapter_tasks.append(process_chapter(chapter))
 
-        # Although we don't return the quiz directly attached to the level model in our current schema,
-        # in a real DB we would save it here. For the orchestrator, we attach questions to the level.
-        level.suggested_questions = questions
-
-        update_progress_cb(f"Selesai memproses level: {level.title}")
-    except Exception as e:
-        logger.error(f"Error processing level {level.title}: {str(e)}")
-        raise e
-
-async def process_chapter(chapter: Chapter, target_skill: str, course_context_json: str, update_progress_cb) -> None:
-    """Processes a single Chapter: breaks into Levels, then processes all Levels in parallel."""
-    try:
-        async with api_semaphore:
-            update_progress_cb(f"Mendesain level untuk BAB: {chapter.title}...")
-            draft_levels = await ChapterDesigner.design_chapter(chapter.title, chapter.description, target_skill, course_context_json)
-            final_levels = await ChapterReviewer.refine_chapter(draft_levels, chapter.title, chapter.description, course_context_json)
-            chapter.levels = final_levels
-
-        # Process all levels in this chapter concurrently
-        level_tasks = [
-            process_level(lvl, target_skill, course_context_json, update_progress_cb)
-            for lvl in chapter.levels
-        ]
-        await asyncio.gather(*level_tasks)
-    except Exception as e:
-        logger.error(f"Error processing chapter {chapter.title}: {str(e)}")
-        raise e
-
-async def generate_full_course_async(
-    target_skill: str,
-    user_context: str,
-    known_prereqs: List[str],
-    update_progress_cb
-) -> Course:
-    """Orchestrates the entire 8-Agent pipeline to generate a full course in parallel."""
-    try:
-        # Phase 1: Prerequisites
-        update_progress_cb("Sedang melakukan asesmen prasyarat (Prerequisite Assessor)...")
-        draft_prereqs = await PrerequisiteAssessor.get_prerequisites(target_skill)
-        final_prereqs = await PrerequisiteReviewer.refine_prerequisites(draft_prereqs, target_skill)
-
-        unknown_prereqs = [p.title for p in final_prereqs if p.title not in known_prereqs]
-
-        # Phase 2: Syllabus
-        update_progress_cb("Sedang merancang silabus utama (Syllabus Architect)...")
-        draft_course = await SyllabusArchitect.generate_syllabus(target_skill, user_context, known_prereqs, unknown_prereqs)
-        final_course = await SyllabusReviewer.refine_syllabus(draft_course, user_context, unknown_prereqs)
-
-        course_context_json = json.dumps({
-            "title": final_course.title,
-            "target_skill": final_course.target_skill,
-            "chapters": [{"title": c.title, "description": c.description} for c in final_course.chapters]
-        })
-
-        # Phase 3: Parallel Chapter Generation
-        # Each chapter will independently break down into levels, and each level will write its content
-        update_progress_cb(f"Mulai memproses {len(final_course.chapters)} BAB secara paralel...")
-
-        chapter_tasks = [
-            process_chapter(ch, target_skill, course_context_json, update_progress_cb)
-            for ch in final_course.chapters
-        ]
         await asyncio.gather(*chapter_tasks)
 
-        update_progress_cb("Generasi Full Course Selesai!")
-        return final_course
+        update_progress_cb("Struktur Kurikulum Selesai Dibuat!")
+        return course
 
     except Exception as e:
-        logger.error(f"Failed to generate full course: {str(e)}")
+        logger.error(f"Failed structure generation: {str(e)}")
         update_progress_cb(f"Error: {str(e)}")
         raise e
