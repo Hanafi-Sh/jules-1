@@ -193,3 +193,20 @@ class QuizMaster:
             ))
 
         return Quiz(level_id=level_id, questions=questions)
+
+class QuestionSuggester:
+    """Agent 7: Analyzes level content and suggests highly contextual follow-up questions"""
+    @staticmethod
+    async def suggest_questions(level_content: str) -> List[str]:
+        system_prompt = """
+        You are 'The Curiosity Agent'. Your job is to read a piece of educational textbook content and identify the most complex technical terms or abstract concepts mentioned in it.
+        Then, generate 3-5 highly engaging, contextual follow-up questions that a curious student might want to ask to understand those specific terms deeper.
+        For example, if the text mentions PyTorch tensors and .backward(), a good question might be "Apa sebenarnya tensor itu secara matematis?" or "Bagaimana cara kerja .backward() di balik layar?".
+
+        Output MUST be a JSON object with a 'questions' array containing the list of question strings.
+        Keep the questions natural and inquisitive.
+        """
+        user_prompt = f"Textbook Content:\n\n{level_content}"
+
+        result_json = await generate_json(system_prompt, user_prompt)
+        return result_json.get("questions", [])

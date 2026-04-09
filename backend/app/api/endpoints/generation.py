@@ -10,7 +10,8 @@ from app.services.agents import (
     ChapterDesigner,
     ContentAuthor,
     Formatter,
-    QuizMaster
+    QuizMaster,
+    QuestionSuggester
 )
 from app.models.course import Course, Chapter, Level, Quiz, Prerequisite
 
@@ -83,7 +84,7 @@ async def design_chapter(chapter_id: str, request: ChapterDesignRequest):
 
 @router.post("/level/{level_id}/content", response_model=Level)
 async def generate_level_content(level_id: str, request: LevelContentRequest):
-    """Generates and formats the content for a specific level."""
+    """Generates and formats the content for a specific level, and adds suggested follow-up questions."""
     try:
         # Create a mock level object to pass to the ContentAuthor
         level = Level(
@@ -98,8 +99,12 @@ async def generate_level_content(level_id: str, request: LevelContentRequest):
 
         # Agent 4: Format Content
         formatted_content = await Formatter.format_content(raw_content)
-
         level.content = formatted_content
+
+        # Agent 7: Suggest follow-up questions
+        suggested_questions = await QuestionSuggester.suggest_questions(formatted_content)
+        level.suggested_questions = suggested_questions
+
         return level
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

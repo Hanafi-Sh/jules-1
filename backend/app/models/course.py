@@ -12,6 +12,7 @@ class Level(BaseModel):
     description: str = Field(..., description="Brief description of what will be learned")
     order: int = Field(..., description="Order of the level in the chapter")
     content: Optional[str] = Field(None, description="The formatted markdown content for this level")
+    suggested_questions: Optional[List[str]] = Field(default_factory=list, description="AI suggested follow-up questions for deeper understanding")
 
 class Chapter(BaseModel):
     id: str = Field(..., description="Unique identifier for the chapter")
