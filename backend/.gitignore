@@ -1,6 +1,5 @@
 
 # API Logs
-*.jsonl
 *.log
 script_output.log
 
